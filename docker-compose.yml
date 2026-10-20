@@ -1,0 +1,114 @@
+name: ytc-movie-maker
+
+volumes:
+  ollama-data:
+
+services:
+  # ============================================================
+  # 1. llm-service : Ollama (ローカルLLM)
+  # ============================================================
+  llm:
+    image: ollama/ollama:latest
+    container_name: ytc-llm
+    ports:
+      - "${LLM_PORT:-11434}:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  # モデルを初回だけ pull するワンショット初期化コンテナ
+  llm-init:
+    image: ollama/ollama:latest
+    container_name: ytc-llm-init
+    depends_on:
+      llm:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://llm:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["ollama pull $$OLLAMA_MODEL && ollama list"]
+    restart: "no"
+
+  # ============================================================
+  # 2. tts-service : VOICEVOX Engine (HTTP API TTS)
+  # ============================================================
+  tts:
+    image: ${VOICEVOX_IMAGE:-voicevox/voicevox_engine:cpu-ubuntu20.04-latest}
+    container_name: ytc-tts
+    ports:
+      - "${TTS_PORT:-50021}:50021"
+    healthcheck:
+      # VOICEVOX イメージには curl がなく wget がある
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:50021/version"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  # ============================================================
+  # 3. remotion-renderer : Node.js + Remotion + Chromium + FFmpeg
+  #    セグメント単位のレンダリングと ffmpeg concat を HTTP で受ける
+  # ============================================================
+  remotion-renderer:
+    build:
+      context: ./services/remotion
+    container_name: ytc-remotion
+    ports:
+      - "${RENDERER_PORT:-3100}:3100"
+    volumes:
+      - ./shared-data:/shared-data
+    environment:
+      RENDER_CONCURRENCY: ${RENDER_CONCURRENCY:-2}
+      SHARED_DIR: /shared-data
+      PORT: 3100
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3100/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+    restart: unless-stopped
+
+  # ============================================================
+  # 4. orchestrator : パイプライン制御ワーカー
+  # ============================================================
+  orchestrator:
+    build:
+      context: ./services/orchestrator
+    container_name: ytc-orchestrator
+    depends_on:
+      llm:
+        condition: service_healthy
+      llm-init:
+        condition: service_completed_successfully
+      tts:
+        condition: service_healthy
+      remotion-renderer:
+        condition: service_healthy
+    volumes:
+      - ./shared-data:/shared-data
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://llm:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+      VOICEVOX_BASE_URL: ${VOICEVOX_BASE_URL:-http://tts:50021}
+      VOICEVOX_SPEAKER: ${VOICEVOX_SPEAKER:-3}
+      RENDERER_URL: http://remotion-renderer:3100
+      VIDEO_FPS: ${VIDEO_FPS:-30}
+      VIDEO_WIDTH: ${VIDEO_WIDTH:-1920}
+      VIDEO_HEIGHT: ${VIDEO_HEIGHT:-1080}
+      TARGET_DURATION_MIN: ${TARGET_DURATION_MIN:-10}
+      CHAPTER_COUNT: ${CHAPTER_COUNT:-6}
+      SENTENCE_GAP_SEC: ${SENTENCE_GAP_SEC:-0.35}
+      SHARED_DIR: /shared-data
+      RUN_ON_STARTUP: ${RUN_ON_STARTUP:-false}
+      MOCK_PIPELINE: ${MOCK_PIPELINE:-true}
+      JOB_TOPIC: ${JOB_TOPIC:-大規模言語モデルの仕組み}
+    restart: unless-stopped
