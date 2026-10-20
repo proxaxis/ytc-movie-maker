@@ -2,6 +2,7 @@ name: ytc-movie-maker
 
 volumes:
   ollama-data:
+  imagegen-models:
 
 services:
   # ============================================================
@@ -79,6 +80,34 @@ services:
     restart: unless-stopped
 
   # ============================================================
+  # 3.5 imagegen : ローカル画像生成 (SD1.5 / diffusers / GPU)
+  # ============================================================
+  imagegen:
+    build:
+      context: ./services/imagegen
+    container_name: ytc-imagegen
+    volumes:
+      - ./shared-data:/shared-data
+      - imagegen-models:/root/.cache/huggingface
+    environment:
+      SHARED_DIR: /shared-data
+      SD_MODEL: ${SD_MODEL:-runwayml/stable-diffusion-v1-5}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8100/health')\""]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 120s
+    restart: unless-stopped
+
+  # ============================================================
   # 4. orchestrator : パイプライン制御ワーカー
   # ============================================================
   orchestrator:
@@ -101,7 +130,7 @@ services:
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
       VOICEVOX_BASE_URL: ${VOICEVOX_BASE_URL:-http://tts:50021}
       VOICEVOX_SPEAKER: ${VOICEVOX_SPEAKER:-8}
-      VOICEVOX_SPEED: ${VOICEVOX_SPEED:-1.2}
+      VOICEVOX_SPEED: ${VOICEVOX_SPEED:-1.4}
       RENDERER_URL: http://remotion-renderer:3100
       VIDEO_FPS: ${VIDEO_FPS:-30}
       VIDEO_WIDTH: ${VIDEO_WIDTH:-1920}
@@ -110,7 +139,9 @@ services:
       CHAPTER_COUNT: ${CHAPTER_COUNT:-6}
       SENTENCE_GAP_SEC: ${SENTENCE_GAP_SEC:-0.35}
       BGM_MOOD: ${BGM_MOOD:-calm}
-      CHARACTER_IMAGES: ${CHARACTER_IMAGES:-characters/tsumugi-1.png,characters/tsumugi-2.png}
+      ACCENT_COLOR: ${ACCENT_COLOR:-}
+      ACCENT_COLOR2: ${ACCENT_COLOR2:-}
+      CHARACTER_IMAGES: ${CHARACTER_IMAGES:-characters/tsumugi-1.png}
       CHARACTER_CREDIT: "${CHARACTER_CREDIT:-VOICEVOX:春日部つむぎ / 立ち絵=春日部つくし}"
       SHARED_DIR: /shared-data
       RUN_ON_STARTUP: ${RUN_ON_STARTUP:-false}

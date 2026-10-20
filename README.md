@@ -117,9 +117,8 @@ docker compose exec orchestrator python main.py --topic "相対性理論をや�
 `shared-data/characters/` に立ち絵PNGを配置すると、動画右下に表示される
 （スライド・字幕は自動で左寄せに調整）。
 
-- `CHARACTER_IMAGES` にカンマ区切りで複数指定:
-  `characters/tsumugi-1.png,characters/tsumugi-2.png`
-  → 1枚目=基本立ち絵、2枚目=ウインク差分として約4秒周期で切替（まばたき演出）
+- `CHARACTER_IMAGES` にカンマ区切りで指定（既定: `characters/tsumugi-1.png`）。
+  2枚目を追加するとウインク差分として約4秒周期で切替（まばたき演出）
 - 春日部つむぎの公式立ち絵は **公式サイトの利用規約に従って入手** すること。
   同梱の readme.txt に従い、立ち絵利用動画は商用利用可・二次配布は禁止
 - 立ち絵使用時は `description.txt` にクレジットを自動付記

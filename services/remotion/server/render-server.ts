@@ -40,9 +40,13 @@ type SegmentManifest = {
   width: number;
   height: number;
   accentHue?: number;
+  accentColor?: string;
+  accentColor2?: string;
   /** shared-data からの相対パス (例: characters/tsumugi-1.png) */
   characterImage?: string;
   characterWink?: string;
+  bgSeed?: number;
+  bgStyle?: string;
   segments: Array<
     SegmentProps & {index: number; id: string}
   >;
@@ -76,6 +80,8 @@ app.post('/render-segment', async (req, res) => {
       durationInFrames: seg.durationInFrames,
       audioBaseUrl: `http://localhost:${PORT}/shared`,
       accentHue: seg.accentHue ?? manifest.accentHue,
+      accentColor: manifest.accentColor,
+      accentColor2: manifest.accentColor2,
       characterImage:
         manifest.characterImage &&
         fs.existsSync(path.join(SHARED, manifest.characterImage))
@@ -85,6 +91,12 @@ app.post('/render-segment', async (req, res) => {
         manifest.characterWink &&
         fs.existsSync(path.join(SHARED, manifest.characterWink))
           ? `http://localhost:${PORT}/shared/${manifest.characterWink}`
+          : undefined,
+      bgSeed: manifest.bgSeed,
+      bgStyle: manifest.bgStyle,
+      image:
+        seg.image && fs.existsSync(path.join(SHARED, seg.image))
+          ? `http://localhost:${PORT}/shared/${seg.image}`
           : undefined,
     };
 

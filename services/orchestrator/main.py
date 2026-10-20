@@ -35,6 +35,7 @@ VOICEVOX_BASE_URL = env("VOICEVOX_BASE_URL", "http://tts:50021").rstrip("/")
 VOICEVOX_SPEAKER = int(env("VOICEVOX_SPEAKER", "3"))
 VOICEVOX_SPEED = float(env("VOICEVOX_SPEED", "1.2"))
 RENDERER_URL = env("RENDERER_URL", "http://remotion-renderer:3100").rstrip("/")
+IMAGEGEN_URL = env("IMAGEGEN_URL", "http://imagegen:8100").rstrip("/")
 SHARED_DIR = env("SHARED_DIR", "/shared-data")
 FPS = int(env("VIDEO_FPS", "30"))
 WIDTH = int(env("VIDEO_WIDTH", "1920"))
@@ -47,9 +48,12 @@ BGM_MOOD = env("BGM_MOOD", "calm")  # フォールバック用ムード
 # 1枚目=基本、2枚目=ウインク差分として周期的に切り替わる）
 CHARACTER_IMAGES = env(
     "CHARACTER_IMAGES",
-    env("CHARACTER_IMAGE", "characters/tsumugi-1.png,characters/tsumugi-2.png"))
+    env("CHARACTER_IMAGE", "characters/tsumugi-1.png"))
 CHARACTER_CREDIT = env(
     "CHARACTER_CREDIT", "VOICEVOX:春日部つむぎ / 立ち絵=春日部つくし")
+# 固定テーマカラー（空ならジョブごとのランダム色相にフォールバック）
+ACCENT_COLOR = env("ACCENT_COLOR", "")
+ACCENT_COLOR2 = env("ACCENT_COLOR2", "")
 TAIL_PAD_SEC = 0.8  # セグメント末尾の余白
 
 HTTP = requests.Session()
@@ -80,13 +84,13 @@ def ollama_generate(prompt: str, num_predict: int = 2048) -> str:
     return resp.json()["response"]
 
 
-def extract_json(text: str) -> dict:
-    """LLM出力から最初のJSONオブジェクトを頑健に抽出する。"""
+def extract_json(text: str):
+    """LLM出力から最初のJSON(オブジェクトまたは配列)を頑健に抽出する。"""
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    m = re.search(r"\{.*\}", text, re.DOTALL)
+    m = re.search(r"[\{\[].*[\}\]]", text, re.DOTALL)
     if m:
         return json.loads(m.group(0))
     raise ValueError(f"JSONを抽出できません: {text[:300]}")
@@ -109,13 +113,53 @@ def stage1_outline(topic: str) -> dict:
 チャプターはちょうど{CHAPTER_COUNT}個。idは ch1, ch2, ... とすること。
 tagsは検索に有効な関連キーワード5〜10個。"""
     log(f"[LLM:1/2] 目次生成中... (model={OLLAMA_MODEL})")
-    data = extract_json(ollama_generate(prompt, num_predict=1024))
-    chapters = data["chapters"][:CHAPTER_COUNT]
-    for i, ch in enumerate(chapters, 1):
-        ch["id"] = f"ch{i}"
-    data["chapters"] = chapters
-    log(f"[LLM:1/2] {len(chapters)}チャプター: " +
-        ", ".join(c["title"] for c in chapters))
+    chapters = None
+    data = {}
+    for attempt in (1, 2):
+        data = extract_json(ollama_generate(prompt, num_predict=1024))
+        # キー名の揺れを吸収
+        raw = (data.get("chapters") or data.get("chapter_list")
+               or data.get("outline") or data.get("toc") or [])
+        if isinstance(raw, dict):
+            raw = list(raw.values())
+        if isinstance(raw, list) and raw:
+            chapters = raw
+            break
+        log(f"[LLM:1/2] chapters未取得 (attempt {attempt}) keys={list(data)}")
+    if not chapters:
+        # 小型モデルがネスト構造を落とす場合のフォールバック:
+        # チャプタータイトルの配列だけを要求する最小プロンプト
+        log("[LLM:1/2] 簡易モード（タイトル配列のみ）で再生成")
+        simple = f"""テーマ「{topic}」の解説動画のチャプタータイトルを
+ちょうど{CHAPTER_COUNT}個、JSONの配列のみで出力せよ。
+出力例: ["導入", "基礎知識", "歴史", "仕組み", "応用", "まとめ"]"""
+        for _ in (1, 2):
+            arr = extract_json(ollama_generate(simple, num_predict=512))
+            if isinstance(arr, list) and arr:
+                chapters = arr
+                break
+            if isinstance(arr, dict):
+                vals = [v for v in arr.values() if isinstance(v, list)]
+                if vals and vals[0]:
+                    chapters = vals[0]
+                    break
+    if not chapters:
+        raise ValueError(f"LLMがチャプター構成を返しませんでした: {str(data)[:200]}")
+
+    # 文字列のみの要素も {title,brief} に正規化
+    norm = []
+    for i, ch in enumerate(chapters[:CHAPTER_COUNT], 1):
+        if isinstance(ch, str):
+            ch = {"title": ch}
+        norm.append({
+            "id": f"ch{i}",
+            "title": str(ch.get("title", f"チャプター{i}")),
+            "brief": str(ch.get("brief", "")),
+        })
+    data["chapters"] = norm
+    data.setdefault("title", topic)
+    log(f"[LLM:1/2] {len(norm)}チャプター: " +
+        ", ".join(c["title"] for c in norm))
     return data
 
 
@@ -136,6 +180,13 @@ def stage2_chapter(topic: str, video_title: str, chapter: dict) -> dict:
 }}
 narration は1文ずつの配列で、合計{n_sent}文程度(約{chapter_min:.1f}分の話量)。
 bullets は3〜5個の短い箇条書き。
+
+【文体ルール】人間が書いたような自然で温度感のある日本語にすること:
+- 「結論から言うと」「以下で解説します」「〜と言えるでしょう」等の構造宣言・決まり文句は禁止
+- 「一般的に」「場合によります」等の保険をかける表現は禁止
+- 接続詞(「また」「さらに」「しかしながら」)は極力使わず自然な流れにする
+- 「〜です/〜ます」が3回以上連続しないよう体言止めや言い切りを混ぜる
+- 抽象的なまとめで終わらず、読み物のような自然な余韻で締める
 重要: narration では読み間違いやすい漢字・難読語・固有名詞・数字に必ず
 半角括弧で読み仮名(ひらがな)を付けること。例: 解釈(かいしゃく)、
 営業(えいぎょう)利益(りえき)、東京都(とうきょうと)。
@@ -149,9 +200,66 @@ bullets は3〜5個の短い箇条書き。
     if not isinstance(data.get("narration"), list) or not data["narration"]:
         raise ValueError(f"チャプター{chapter['id']}: narration が空です")
     data["id"] = chapter["id"]
+    data["narration"] = sanitize_narration(data["narration"])
+    if len(data["narration"]) < 3:
+        raise ValueError(f"有効なセリフ不足: {len(data['narration'])}文")
     log(f"[LLM:2/2] {chapter['id']}: {len(data['narration'])}文, "
         f"{len(data['bullets'])}要点")
     return data
+
+
+def verify_chapter(chapter: dict) -> dict:
+    """stage2.5: ナレーションの事実誤認（数値・年号・固有名詞）をLLMで検証・訂正。
+    失敗時は元の内容をそのまま使う。"""
+    facts_env = env("FACT_CHECK", "true").lower() == "true"
+    if not facts_env:
+        return chapter
+    text = "\n".join(f"{i+1}. {s}" for i, s in enumerate(chapter["narration"]))
+    prompt = f"""以下は解説動画チャプター「{chapter['title']}」のナレーション文です。
+事実誤認（数値・年号・企業名・規格値・固有名詞）だけを修正してください。
+表現の好み・言い回しは変えないこと。修正不要ならそのまま返すこと。
+
+{text}
+
+出力は必ず以下のJSON形式のみ:
+{{"narration": ["修正後の文1。", "修正後の文2。"]}}
+文数は元と同じ{len(chapter['narration'])}文に保つこと。"""
+    try:
+        log(f"[LLM:検証] {chapter['id']} の事実チェック中...")
+        data = extract_json(ollama_generate(prompt, num_predict=3000))
+        fixed = data.get("narration")
+        if isinstance(fixed, list) and len(fixed) >= len(chapter["narration"]) * 0.7:
+            before = sanitize_narration(fixed)
+            if before:
+                chapter["narration"] = before
+                log(f"[LLM:検証] {chapter['id']}: {len(before)}文に更新")
+    except Exception as e:
+        log(f"[LLM:検証] {chapter['id']} 失敗→原文維持: {e}")
+    return chapter
+
+
+_PLACEHOLDER_RE = re.compile(
+    r"^[\s　]*(ナレーション文?\d*[。.:：、]?|ナレーション[:：])\s*")
+
+
+def sanitize_narration(narration: list) -> list:
+    """プレースホルダ文頭除去・全角数字正規化・重複文除去。"""
+    seen = set()
+    out = []
+    for s in narration:
+        s = _PLACEHOLDER_RE.sub("", str(s)).strip()
+        if not s or len(s) < 8:
+            continue
+        # 空白・句点を潰したキーで近似重複判定
+        key = re.sub(r"[。\s　、]", "", s)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+    return out
+
+
+_NUM = "零一二三四五六七八九十"
 
 
 def build_mock_script(topic: str) -> dict:
@@ -164,7 +272,8 @@ def build_mock_script(topic: str) -> dict:
             "title": f"チャプター{i}: {topic}のポイント{i}",
             "bullets": [f"ポイント{i}-{j}" for j in range(1, 4)],
             "narration": [
-                f"これは{topic}に関するチャプター{i}のテストナレーション、{j}文目です。"
+                f"これは{topic}に関するチャプター{i}のテストナレーション、"
+                f"{_NUM[j]}番目です。"
                 if j > 1
                 else f"これは読み仮名(かな)注記の検証文です。解釈(かいしゃく)を確認します。"
                 for j in range(1, n_sent + 1)
@@ -230,8 +339,8 @@ def apply_fixes(text: str) -> str:
 # ---------------------------------------------------------------
 # ステップ2: TTS (VOICEVOX)
 # ---------------------------------------------------------------
-def synthesize_wav(text: str) -> bytes:
-    """audio_query → synthesis でWAVバイト列を取得。"""
+def synthesize_wav(text: str) -> tuple[bytes, str]:
+    """audio_query → synthesis でWAVと推定読み(kana)を取得。"""
     q = HTTP.post(
         f"{VOICEVOX_BASE_URL}/audio_query",
         params={"text": text, "speaker": VOICEVOX_SPEAKER},
@@ -239,6 +348,7 @@ def synthesize_wav(text: str) -> bytes:
     )
     q.raise_for_status()
     query = q.json()
+    kana = query.get("kana", "")  # VOICEVOXが推定した実際の読み（レビュー用）
     query["speedScale"] = VOICEVOX_SPEED  # ナレーション速度
     s = HTTP.post(
         f"{VOICEVOX_BASE_URL}/synthesis",
@@ -247,7 +357,7 @@ def synthesize_wav(text: str) -> bytes:
         timeout=HTTP_TIMEOUT,
     )
     s.raise_for_status()
-    return s.content
+    return s.content, kana
 
 
 def wav_duration_sec(wav_bytes: bytes) -> float:
@@ -259,16 +369,33 @@ def tts_chapter(chapter: dict, audio_dir: str, rel_dir: str) -> list:
     """1チャプター分の全セリフを音声化し、タイミング付き配列を返す。"""
     sentences = []
     cursor = 0.0
-    for j, raw in enumerate(chapter["narration"]):
+    # 見切れ防止: 長すぎるセリフは句読点で分割（字幕は1〜2行想定）
+    raw_list = []
+    for raw in chapter["narration"]:
+        if len(raw) > 90:
+            parts = re.split(r"(?<=[。、！？])", raw)
+            buf = ""
+            for p in parts:
+                if len(buf) + len(p) > 80 and buf:
+                    raw_list.append(buf)
+                    buf = p
+                else:
+                    buf += p
+            if buf:
+                raw_list.append(buf)
+        else:
+            raw_list.append(raw)
+    for j, raw in enumerate(raw_list):
         display = annotated_display(raw)          # 字幕: 漢字表記のまま
         speech = apply_fixes(annotated_speech(raw))  # 音声: かな読み+矯正
-        wav = synthesize_wav(speech)
+        wav, kana = synthesize_wav(speech)
         dur = wav_duration_sec(wav)
         fname = f"s{j:02d}.wav"
         with open(os.path.join(audio_dir, fname), "wb") as f:
             f.write(wav)
         sentences.append({
             "text": display,
+            "kana": kana,  # 実際に読まれた読み（誤読レビュー用）
             "audio": f"{rel_dir}/{fname}",
             "startSec": round(cursor, 3),
             "durationSec": round(dur, 3),
@@ -295,14 +422,16 @@ def select_bgm(mood: str) -> dict | None:
     if not tracks:
         log("[BGM] 登録トラックなし → BGMなしで続行")
         return None
+    # 実在するファイルのみ選択対象にする
+    tracks = [t for t in tracks
+              if os.path.exists(os.path.join(SHARED_DIR, "bgm", t["file"]))]
+    if not tracks:
+        log("[BGM] 有効なファイルなし → BGMなしで続行")
+        return None
     mood_l = (mood or "").lower()
     matched = [t for t in tracks
                if mood_l and mood_l in [m.lower() for m in t.get("mood", [])]]
     track = random.choice(matched or tracks)
-    mp3 = os.path.join(SHARED_DIR, "bgm", track["file"])
-    if not os.path.exists(mp3):
-        log(f"[BGM] {track['file']} が見つからない → BGMなしで続行")
-        return None
     log(f"[BGM] mood={mood!r} → 「{track.get('title','?')}」"
         f"({track.get('artist','?')}) {'mood一致' if matched else 'fallback'}")
     return track
@@ -362,6 +491,23 @@ def write_upload_metadata(job_dir: str, script: dict, description: str) -> None:
     with open(os.path.join(job_dir, "upload_metadata.json"), "w",
               encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
+
+
+def gen_chapter_image(chapter: dict, job_rel: str) -> str | None:
+    """章の image_prompt をローカルSDで生成。失敗時 None。"""
+    prompt = chapter.get("image_prompt")
+    if not prompt:
+        return None
+    rel = f"{job_rel}/images/{chapter['id']}.png"
+    try:
+        r = HTTP.post(f"{IMAGEGEN_URL}/generate",
+                      json={"prompt": prompt, "out_path": rel},
+                      timeout=(10, 300))
+        r.raise_for_status()
+        return rel
+    except Exception as e:
+        log(f"[画像] {chapter['id']} 生成スキップ: {e}")
+        return None
 
 
 # ---------------------------------------------------------------
@@ -433,7 +579,8 @@ def run_pipeline(topic: str, mock: bool, job_id: str | None = None,
         for ch in script["chapters"]:
             for attempt in (1, 2):
                 try:
-                    detailed.append(stage2_chapter(topic, script["title"], ch))
+                    detailed.append(
+                        verify_chapter(stage2_chapter(topic, script["title"], ch)))
                     break
                 except Exception as e:
                     if attempt == 2:
@@ -454,6 +601,8 @@ def run_pipeline(topic: str, mock: bool, job_id: str | None = None,
         os.makedirs(audio_dir, exist_ok=True)
         sents = tts_chapter(ch, audio_dir, f"{job_rel}/audio/{ch['id']}")
         chapter_sents.append(sents)
+        img_rel = gen_chapter_image(ch, job_rel)
+        ch["_image"] = img_rel
         dur = sum(s["durationSec"] for s in sents) + GAP_SEC * len(sents)
         total_sec += dur + TAIL_PAD_SEC
         log(f"[2/4] TTS {ch['id']}: {len(sents)}文 {dur:.1f}s")
@@ -467,6 +616,7 @@ def run_pipeline(topic: str, mock: bool, job_id: str | None = None,
             "id": ch["id"],
             "title": ch["title"],
             "bullets": ch["bullets"],
+            "image": ch.get("_image"),
             "chapterNumber": i + 1,
             "chapterCount": len(script["chapters"]),
             "sentences": sents,
@@ -495,11 +645,33 @@ def run_pipeline(topic: str, mock: bool, job_id: str | None = None,
         "fps": FPS, "width": WIDTH, "height": HEIGHT,
         "gapSec": GAP_SEC,
         "accentHue": accent_hue,
+        "accentColor": ACCENT_COLOR or None,
+        "accentColor2": ACCENT_COLOR2 or None,
+        "bgSeed": int(hashlib.md5(job_id.encode()).hexdigest()[:8], 16),
+        "bgStyle": env("BG_STYLE", "game"),
         "characterImage": char_paths[0] if has_char else None,
         "characterWink": char_paths[1] if len(char_paths) > 1 else None,
         "totalDurationSec": round(total_sec, 2),
         "segments": segments,
     }
+    # レイアウト見切れチェックフェーズ
+    warns = []
+    for seg in segments:
+        if len(seg["title"]) > 28:
+            warns.append(f"{seg['id']} タイトル長 {len(seg['title'])}字")
+        if len(seg["bullets"]) > 5:
+            warns.append(f"{seg['id']} 箇条書き {len(seg['bullets'])}個")
+        for s in seg["sentences"]:
+            if len(s["text"]) > 80:
+                warns.append(f"{seg['id']} 字幕長 {len(s['text'])}字: {s['text'][:30]}…")
+        for b in seg["bullets"]:
+            if len(str(b)) > 40:
+                warns.append(f"{seg['id']} 要点長 {len(str(b))}字")
+    if warns:
+        log(f"[見切れチェック] 警告{len(warns)}件: " + " | ".join(warns[:8]))
+    else:
+        log("[見切れチェック] OK")
+
     manifest_rel = f"{job_rel}/manifest.json"
     with open(os.path.join(job_dir, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)

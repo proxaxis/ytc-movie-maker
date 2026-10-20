@@ -1,0 +1,23 @@
+# GPU版オーバーライド。NVIDIA Container Toolkit ＋ 動作するドライバが必要。
+# 使い方: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+# ※ nvidia-smi がホストで動作することを先に確認すること
+
+services:
+  llm:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  tts:
+    image: ${VOICEVOX_IMAGE_GPU:-voicevox/voicevox_engine:nvidia-ubuntu20.04-latest}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
