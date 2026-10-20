@@ -2,10 +2,11 @@ FROM node:20-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Chromium ヘッドレスシェル依存 + ffmpeg（セグメント結合用）
+# Chromium ヘッドレスシェル依存 + ffmpeg（セグメント結合用）+ 日本語フォント
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     ca-certificates \
+    fonts-noto-cjk \
     libnss3 \
     libdbus-1-3 \
     libatk1.0-0 \

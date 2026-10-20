@@ -1,0 +1,22 @@
+{
+  "tracks": [
+    {
+      "file": "test_calm.mp3",
+      "title": "テスト用BGM（自動生成トーン）",
+      "artist": "ytc-movie-maker",
+      "source": "local generated",
+      "url": "",
+      "license": "テスト用",
+      "mood": ["calm", "relaxing"]
+    },
+    {
+      "file": "example_calm.mp3",
+      "title": "楽曲タイトル（差し替え例）",
+      "artist": "作曲者名",
+      "source": "DOVA-SYNDROME",
+      "url": "https://dova-s.jp/bgm/playxxxxx.html",
+      "license": "DOVA-SYNDROME 利用規約（クレジット表記推奨）",
+      "mood": ["calm", "relaxing"]
+    }
+  ]
+}

@@ -67,6 +67,7 @@ services:
       - ./shared-data:/shared-data
     environment:
       RENDER_CONCURRENCY: ${RENDER_CONCURRENCY:-2}
+      BGM_VOLUME: ${BGM_VOLUME:-0.22}
       SHARED_DIR: /shared-data
       PORT: 3100
     healthcheck:
@@ -99,7 +100,8 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://llm:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
       VOICEVOX_BASE_URL: ${VOICEVOX_BASE_URL:-http://tts:50021}
-      VOICEVOX_SPEAKER: ${VOICEVOX_SPEAKER:-3}
+      VOICEVOX_SPEAKER: ${VOICEVOX_SPEAKER:-8}
+      VOICEVOX_SPEED: ${VOICEVOX_SPEED:-1.2}
       RENDERER_URL: http://remotion-renderer:3100
       VIDEO_FPS: ${VIDEO_FPS:-30}
       VIDEO_WIDTH: ${VIDEO_WIDTH:-1920}
@@ -107,8 +109,17 @@ services:
       TARGET_DURATION_MIN: ${TARGET_DURATION_MIN:-10}
       CHAPTER_COUNT: ${CHAPTER_COUNT:-6}
       SENTENCE_GAP_SEC: ${SENTENCE_GAP_SEC:-0.35}
+      BGM_MOOD: ${BGM_MOOD:-calm}
+      CHARACTER_IMAGES: ${CHARACTER_IMAGES:-characters/tsumugi-1.png,characters/tsumugi-2.png}
+      CHARACTER_CREDIT: "${CHARACTER_CREDIT:-VOICEVOX:春日部つむぎ / 立ち絵=春日部つくし}"
       SHARED_DIR: /shared-data
       RUN_ON_STARTUP: ${RUN_ON_STARTUP:-false}
       MOCK_PIPELINE: ${MOCK_PIPELINE:-true}
       JOB_TOPIC: ${JOB_TOPIC:-大規模言語モデルの仕組み}
+      YT_UPLOAD: ${YT_UPLOAD:-false}
+      YT_PRIVACY: ${YT_PRIVACY:-private}
+      YT_CATEGORY_ID: ${YT_CATEGORY_ID:-27}
+      YT_CLIENT_ID: ${YT_CLIENT_ID:-}
+      YT_CLIENT_SECRET: ${YT_CLIENT_SECRET:-}
+      YT_REFRESH_TOKEN: ${YT_REFRESH_TOKEN:-}
     restart: unless-stopped

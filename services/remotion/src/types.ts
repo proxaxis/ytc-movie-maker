@@ -18,4 +18,10 @@ export type SegmentProps = {
   durationInFrames: number;
   /** 例: http://localhost:3100/shared */
   audioBaseUrl: string;
+  /** ジョブ固有のアクセント色相 0-360（テンプレ感抑制・バリエーション用） */
+  accentHue?: number;
+  /** キャラクター立ち絵（基本）のURL */
+  characterImage?: string;
+  /** キャラクター立ち絵（ウインク差分）のURL。指定時は周期的に切替表示 */
+  characterWink?: string;
 };
